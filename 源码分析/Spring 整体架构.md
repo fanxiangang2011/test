@@ -63,9 +63,45 @@ AOP模块提供了一个符合AOP联盟标准的面向切面编程的实现，�
 
 ​	Test模块支持使用JUnit和TestNG对Spring组件进行测试。
 
+# 核心类介绍
 
+## 1、DefaultListableBeanFactory
 
+XmlBeanFactory继承了DefaultListableBeanFactory，而DefaultListableBeanFactory是整个Bean加载的核心部分，是Spring注册及加载Bean的默认实现，而对于XMLBeanFactory与DefaultListableBeanFactory不同的地方其实是在XmlBeanFactory中使用了自定义的XML读取器XmlBeanDefinitionReader,实现了个性化的BeanDefinitionRead读取，DefaultListableBeanFactory继承了AbstractAutowireCapableBeanFactory并实现了ConfigurableListableBeanFactory以及BeanDefinitionRegisry接口。
 
+- AliasRegistry:定义对alias的简单增删改等操作
+
+- SimpleAliasRegistry:主要使用map作为alias的缓存，并对接口AliasRegistry进行实现
+
+- SingletonBeanRegistry:定义对单例的注册及获取
+
+- BeanFactory:定义获取Bean及Bean的各种属性
+
+- DefaultSingletonBeanRegistry:对接口SingletionBeanRegistry各函数的实现。
+
+- HierarchicalBeanFactory:继承BeanFactory,也就是在BeanFactory定义的功能的基础上增加了对parentFactory的支持
+
+- BeanDefinitionRegistry:定义对BeanDefinition的各种增删改操作
+
+- FactoryBeanRegistrySupport:在DefaultSingletonBeanRegistry基础上增加了对FactoryBean的特殊处理功能。
+
+- ConfigurableBeanFactory:提供配置Factory的各种方法。
+
+- ListableBeanFactory:根据各种条件获取bean的配置清单。
+
+- AbstractBeanFactory:综合FactoryBeanRegistrySupport和ConfigurableBeanFactory的功能
+
+- AutowireCapableBeanFactory:提供创建bean、自动注入、初始化以及应用bean的后处理器。
+
+- AbstractAutowireCapableBeanFactory:综合AbstractBeanFactory并对接口Autowire Capable BeanFactory进行实现。
+
+- ConfigurableListBeanFactory：BeanFactory配置清单，指定忽略类型及接口等。
+
+- DefaultListableBeanFactory:综合上面所以功能，主要是对Bean注册后的处理。
+
+  XmlBeanFactory对DefaultListableBeanFactory进行了扩展，主要用于从XML文档中读取BeanDefinition，对于注册及获取Bean都是使用从父类DefaultListableBeanFactory继承的方法去实现，而唯独与父类不同的个性化实现就是增加了XmlBeanDefinitionReader类型的reader属性。在XmlBeanFactory中主要使用reader属性对资源文件进行读取和注册。
+
+## 2、XmlBeanDefinitionReader
 
 
 
