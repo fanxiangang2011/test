@@ -103,9 +103,21 @@ XmlBeanFactory继承了DefaultListableBeanFactory，而DefaultListableBeanFactor
 
 ## 2、XmlBeanDefinitionReader
 
+XML配置文件的读取是Spring中最重要的功能，因为Spring的大部分功能都是以配置作为切入点，那么我们可以从XmlBeanDefinitionReader中梳理一下资源文件读取、解析及注册的大致脉络，首先我们看看各个类的功能。
 
+* ResourceLoader: 定义资源加载器，主要应用于根据定义的资源文件地址返回对应的Resource。
+* BeanDefinitionReader: 主要定义资源文件读取并转换为BeanDefinition的各个功能。
+* EnvironmentCapable: 定义获取Environment方法
+* DecumentLoader: 定义从资源文件加载到转换为Document的功能。
+* AbstractBeanDefinitionReader: 对EnvironmentCapable、BeanDefinitionReader类定义的功能进行实现。
+* BeanDefinitionDefinitionReader: 定义读取Document并注册BeanDefinition功能。
+* BeanDefinitionParserDelegate: 定义分析Element的各种方法。
 
+（1）通过继承自AbstractBeanDefinitionReader中的方法，来使用ResourLoader将资源文件路径转换为对应的Resource文件。
 
+（2）通过DocumentLoader对Resource文件进行转换，将Resource文件转换为Document文件
+
+（3）通过实现接口BeanDefinitionDecumentReader的DefaultBeanDefinitionDocumentReader类对Document进行解析，并使用BeanDefinitionParserDelegate对Element进行解析。
 
 
 
