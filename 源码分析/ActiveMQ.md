@@ -959,7 +959,758 @@ deliveryingAcknowledgements.set(false);
 }
 ```
 
+## 第三节
 
+### unconsumedMessages数据的获取过程
+
+那我们来看看ActiveMQConnectionFactory.createConnection里面做了什么事情
+
+```java
+ public Connection createConnection() throws JMSException {
+        return this.createActiveMQConnection();
+ }
+```
+
+1、动态创建一个传输协议
+
+2、创建一个连接
+
+3、通过transprot.start()
+
+```java
+protected ActiveMQConnection createActiveMQConnection(String userName, String password) throws JMSException {
+        if (this.brokerURL == null) {
+            throw new ConfigurationException("brokerURL not set.");
+        } else {
+            ActiveMQConnection connection = null;
+
+            try {
+                Transport transport = this.createTransport();//动态创建一个协议
+                //创建一个连接
+                connection = this.createActiveMQConnection(transport, this.factoryStats);
+                connection.setUserName(userName);
+                connection.setPassword(password);
+                this.configureConnection(connection);
+                transport.start();
+                if (this.clientID != null) {
+                    connection.setDefaultClientID(this.clientID);
+                }
+
+                return connection;
+            } catch (JMSException var8) {
+                try {
+                    connection.close();
+                } catch (Throwable var6) {
+                }
+
+                throw var8;
+            } catch (Exception var9) {
+                try {
+                    connection.close();
+                } catch (Throwable var7) {
+                }
+
+                throw JMSExceptionSupport.create("Could not connect to broker URL: " + this.brokerURL + ". Reason: " + var9, var9);
+            }
+        }
+    }
+```
+
+#### transprot.start()
+
+我们前面在分析消息发送的时候，已经知道transprot是一个链式 的调用，是一个多层包装的对象
+
+ResonseCorrelator(MutexTransprot(WireFormatNegotiator(InactivityMonitor(TcpTransprot()))))
+
+最终调用TcpTransprot.start()方法，然而这个类中并没有start，而是在父类ServiceSupport.start()中。
+
+```java
+public void start() throws Exception {
+        if (this.started.compareAndSet(false, true)) {
+            boolean success = false;
+            this.stopped.set(false);
+
+            try {
+                this.preStart();
+                this.doStart();
+                success = true;
+            } finally {
+                this.started.set(success);
+            }
+
+            Iterator i$ = this.serviceListeners.iterator();
+
+            while(i$.hasNext()) {
+                ServiceListener l = (ServiceListener)i$.next();
+                l.started(this);
+            }
+        }
+
+    }
+```
+
+这块代码看起来就比较熟悉了，我们之前看过的中间件的源码，通信层都是独立来实现及解耦的。而ActiveMQ也是一样，提供了Transport接口和TransportSupport类。这个接口的主要作用是为了让客户端有消息被异步发送、同步发送和被消费的能力。接下来沿着doStart()往下看，又调用TcpTransport.doStart() ,接着通过super.doStart(),调用TransportThreadSupport.doStart(). 创建了一个线程，传入的是this，调用子类的run方法，也就是TcpTransport.run().
+
+```java
+TcpTransport:
+protected void doStart() throws Exception {
+        this.connect();
+        this.stoppedLatch.set(new CountDownLatch(1));
+        super.doStart();
+    }
+```
+
+```java
+TransportThreadSupport： 
+protected void doStart() throws Exception {
+        this.runner = new Thread((ThreadGroup)null, this, "ActiveMQ Transport: " + this.toString(), this.stackSize);
+        this.runner.setDaemon(this.daemon);
+        this.runner.start();
+    }
+```
+
+
+
+#### TcpTransport.run
+
+run方法主要是从socket中读取数据包，只要TcpTransprot没有停止，它就会不断去调用doRun.
+
+```java
+public void run() {
+        LOG.trace("TCP consumer thread for " + this + " starting");
+        this.runnerThread = Thread.currentThread();
+
+        try {
+            while(!this.isStopped()) {
+                this.doRun();
+            }
+        } catch (IOException var7) {
+            ((CountDownLatch)this.stoppedLatch.get()).countDown();
+            this.onException(var7);
+        } catch (Throwable var8) {
+            ((CountDownLatch)this.stoppedLatch.get()).countDown();
+            IOException ioe = new IOException("Unexpected error occured: " + var8);
+            ioe.initCause(var8);
+            this.onException(ioe);
+        } finally {
+            ((CountDownLatch)this.stoppedLatch.get()).countDown();
+        }
+
+    }
+```
+
+
+
+#### TcpTransport.doRun
+
+doRun中，通过readCommand中读取数据
+
+```java
+TcpTransport:
+protected void doRun() throws IOException {
+        try {
+            Object command = this.readCommand();
+            this.doConsume(command);
+        } catch (SocketTimeoutException var2) {
+        } catch (InterruptedIOException var3) {
+        }
+
+    }
+```
+
+
+
+#### TcpTransprot.readCommend
+
+这里面，通过wireFormat对数据进行格式化，可以认为这是一个反序列化过程。wireFormat默认实现是OpenWireFormat，activeMQ自定义的跨语言的wire协议
+
+```java
+  protected Object readCommand() throws IOException {
+        return this.wireFormat.unmarshal(this.dataIn);
+    }
+```
+
+分析到这，我们差不多明白了传输层的主要工作是获得数据并且把数据转换为对象，再把对象对象传给ActiveMQConnection
+
+#### TransprotSupport.doConsume
+
+TransportSupport类中最重要的方法是doConsume，它的作用就是用来“消费消息”
+
+```java
+  public void doConsume(Object command) {
+        if (command != null) {
+            if (this.transportListener != null) {
+                this.transportListener.onCommand(command);
+            } else {
+                LOG.error("No transportListener available to process inbound command: " + command);
+            }
+        }
+
+    }
+```
+
+TransportSupport类中唯一的成员变量是TransportListener
+
+transportListener;，这也意味着一个Transport支持类绑定一个传送监听器类，传送监听器接口TransportListener 最重要的方法就是 void onCommand(Object command);，它用来处理命令，
+这个transportListener是在哪里赋值的呢？再回到ActiveMQConnection的构造方法中。->246行
+传递了ActiveMQConnection自己本身，(ActiveMQConnection是TransportListener接口的实现类之一)
+于是，消息就这样从传送层到达了我们的连接层上。
+
+```java
+protected ActiveMQConnection(final Transport transport, IdGenerator clientIdGenerator, IdGenerator connectionIdGenerator, JMSStatsImpl factoryStats) throws Exception {
+        this.maxThreadPoolSize = DEFAULT_THREAD_POOL_SIZE;
+        this.rejectedTaskHandler = null;
+        this.transport = transport;
+        this.clientIdGenerator = clientIdGenerator;
+        this.factoryStats = factoryStats;
+        this.executor = new ThreadPoolExecutor(1, 1, 5L, TimeUnit.SECONDS, new LinkedBlockingQueue(), new ThreadFactory() {
+            public Thread newThread(Runnable r) {
+                Thread thread = new Thread(r, "ActiveMQ Connection Executor: " + transport);
+                return thread;
+            }
+        });
+        String uniqueId = connectionIdGenerator.generateId();
+        this.info = new ConnectionInfo(new ConnectionId(uniqueId));
+        this.info.setManageable(true);
+        this.info.setFaultTolerant(transport.isFaultTolerant());
+        this.connectionSessionId = new SessionId(this.info.getConnectionId(), -1L);
+        this.transport.setTransportListener(this);
+        this.stats = new JMSConnectionStatsImpl(this.sessions, this instanceof XAConnection);
+        this.factoryStats.addConnection(this);
+        this.timeCreated = System.currentTimeMillis();
+        this.connectionAudit.setCheckForDuplicates(transport.isFaultTolerant());
+    }
+```
+
+从构造函数可以看出，创建ActiveMQConnection对象时，除了和Transport相互绑定，还对线程池执行器executor进行了初始化。下面我们看看该类的核心方法
+
+#### onCommand
+
+Ø 这里面会针对不同的消息做分发，比如传入的command是MessageDispatch，那么这个command的visit方法就会调用processMessageDispatch方法
+
+```java
+ActiveMQConnection:
+public void onCommand(Object o) {
+    final Command command = (Command)o;
+    if (!this.closed.get() && command != null) {
+        try {
+            command.visit(new CommandVisitorAdapter() {
+                public Response processMessageDispatch(MessageDispatch md) throws Exception {
+                    // 等待Transport中断处理完成
+                    ActiveMQConnection.this.waitForTransportInterruptionProcessingToComplete();
+                    //通过消防者ID来获取消费者对象
+                    //（ActiveMQMessageConsumer实现了ActiveMQDispatcher接口），所以MessageDispatch包含了消息应该被分配到那个消费者的映射信息
+                    //在创建MessageConsumer的时候，调用ActiveMQMessageConsumer的第282行，调用ActiveMQSession的1798行将当前的消费者绑定到dispatchers中 所以这里拿到的是ActiveMQSession
+                    ActiveMQDispatcher dispatcher = (ActiveMQDispatcher)ActiveMQConnection.this.dispatchers.get(md.getConsumerId());
+                    if (dispatcher != null) {
+                        Message msg = md.getMessage();
+                        if (msg != null) {
+                            msg = msg.copy();
+                            msg.setReadOnlyBody(true);
+                            msg.setReadOnlyProperties(true);
+                            msg.setRedeliveryCounter(md.getRedeliveryCounter());
+                            msg.setConnection(ActiveMQConnection.this);
+                            msg.setMemoryUsage((MemoryUsage)null);
+                            md.setMessage(msg);
+                        }
+//调用会话ActiveMQSession自己的dispatch方法来处理这条消息
+                        dispatcher.dispatch(md);
+                    }
+
+                    return null;
+                }
+//如果传入的是ProducerAck，则调用的是下面这个方法，这里我们仅仅关注MessageDispatch就行了
+                public Response processProducerAck(ProducerAck pa) throws Exception {
+                    if (pa != null && pa.getProducerId() != null) {
+                        ActiveMQMessageProducer producer = (ActiveMQMessageProducer)ActiveMQConnection.this.producers.get(pa.getProducerId());
+                        if (producer != null) {
+                            producer.onProducerAck(pa);
+                        }
+                    }
+
+                    return null;
+                }
+
+                public Response processBrokerInfo(BrokerInfo info) throws Exception {
+                    ActiveMQConnection.this.brokerInfo = info;
+                    ActiveMQConnection.this.brokerInfoReceived.countDown();
+                    ActiveMQConnection.access$772(ActiveMQConnection.this, !ActiveMQConnection.this.brokerInfo.isFaultTolerantConfiguration() ? 1 : 0);
+                    ActiveMQConnection.this.getBlobTransferPolicy().setBrokerUploadUrl(info.getBrokerUploadUrl());
+                    return null;
+                }
+
+                public Response processConnectionError(final ConnectionError error) throws Exception {
+                    ActiveMQConnection.this.executor.execute(new Runnable() {
+                        public void run() {
+                            ActiveMQConnection.this.onAsyncException(error.getException());
+                        }
+                    });
+                    return null;
+                }
+
+                public Response processControlCommand(ControlCommand commandx) throws Exception {
+                    ActiveMQConnection.this.onControlCommand(commandx);
+                    return null;
+                }
+
+                public Response processConnectionControl(ConnectionControl control) throws Exception {
+                    ActiveMQConnection.this.onConnectionControl((ConnectionControl)command);
+                    return null;
+                }
+
+                public Response processConsumerControl(ConsumerControl control) throws Exception {
+                    ActiveMQConnection.this.onConsumerControl((ConsumerControl)command);
+                    return null;
+                }
+
+                public Response processWireFormat(WireFormatInfo info) throws Exception {
+                    ActiveMQConnection.this.onWireFormatInfo((WireFormatInfo)command);
+                    return null;
+                }
+            });
+        } catch (Exception var5) {
+            this.onClientInternalException(var5);
+        }
+    }
+
+    Iterator iter = this.transportListeners.iterator();
+
+    while(iter.hasNext()) {
+        TransportListener listener = (TransportListener)iter.next();
+        listener.onCommand(command);
+    }
+
+}
+```
+
+在现在这个场景中，我们只关注processMessageDispatch方法，在这个方法中，只是简单的去调用ActiveMQSession的dispatch方法来处理消息,
+
+Ø tips: command.visit, 这里使用了适配器模式，如果command是一个MessageDispatch，那么它就会调用processMessageDispatch方法，其他方法他不会关心，代码如下：MessageDispatch.visit
+
+```java
+@Override 
+public Response visit(CommandVisitor visitor) throws Exception { 
+    return visitor.processMessageDispatch(this);
+}
+```
+
+
+
+#### ActiveMQSession.dispatch(md)
+
+executor这个对象其实是一个成员对象ActiveMQSessionExecutor，专门负责来处理消息分发
+
+```java
+ public void dispatch(MessageDispatch messageDispatch) {
+        try {
+            this.executor.execute(messageDispatch);
+        } catch (InterruptedException var3) {
+            Thread.currentThread().interrupt();
+            this.connection.onClientInternalException(var3);
+        }
+
+    }
+```
+
+
+
+#### ActiveMQSessionExecutor.execute
+
+Ø 这个方法的核心功能就是处理消息的分发。
+
+```java
+void execute(MessageDispatch message) throws InterruptedException {
+        if (!this.startedOrWarnedThatNotStarted) {
+            ActiveMQConnection connection = this.session.connection;
+            long aboutUnstartedConnectionTimeout = connection.getWarnAboutUnstartedConnectionTimeout();
+            if (!connection.isStarted() && aboutUnstartedConnectionTimeout >= 0L) {
+                long elapsedTime = System.currentTimeMillis() - connection.getTimeCreated();
+                if (elapsedTime > aboutUnstartedConnectionTimeout) {
+                    LOG.warn("Received a message on a connection which is not yet started. Have you forgotten to call Connection.start()? Connection: " + connection + " Received: " + message);
+                    this.startedOrWarnedThatNotStarted = true;
+                }
+            } else {
+                this.startedOrWarnedThatNotStarted = true;
+            }
+        }
+
+        if (!this.session.isSessionAsyncDispatch() && !this.dispatchedBySessionPool) {
+            this.dispatch(message);
+        } else {
+            this.messageQueue.enqueue(message);
+            this.wakeup();
+        }
+
+    }
+```
+
+默认是采用异步消息分发。所以，直接调用messageQueue.enqueue，把消息放到队列中，并且调用wakeup方法
+
+#### 异步分发的流程
+
+```java
+public void wakeup() {
+        if (!this.dispatchedBySessionPool) {//进一步验证
+            if (this.session.isSessionAsyncDispatch()) {//判断session是否为异步分发
+                try {
+                    TaskRunner taskRunner = this.taskRunner;
+                    if (taskRunner == null) {
+                        synchronized(this) {
+                            if (this.taskRunner == null) {
+                                if (!this.isRunning()) {
+                                    return;
+                                }
+//通过TaskRunnerFactory创建了一个任务运行类taskRunner，这里把自己作为一个task传入到createTaskRunner中，说明当前 //的类一定是实现了Task接口的. 简单来说，就是通过线程池去执行一个任务，完成异步调度，简单吧
+                                this.taskRunner = this.session.connection.getSessionTaskRunner().createTaskRunner(this, "ActiveMQ Session: " + this.session.getSessionId());
+                            }
+
+                            taskRunner = this.taskRunner;
+                        }
+                    }
+
+                    taskRunner.wakeup();
+                } catch (InterruptedException var5) {
+                    Thread.currentThread().interrupt();
+                }
+            } else {
+                while(true) {
+                    if (this.iterate()) {
+                        continue;
+                    }
+                }
+            }
+        }
+
+    }
+```
+
+所以，对于异步分发的方式，会调用ActiveMQSessionExecutor中的iterate方法，我们来看看这个方法的代码
+
+##### iterate
+
+这个方法里面做两个事
+Ø 把消费者监听的所有消息转存到待消费队列中
+Ø 如果messageQueue还存在遗留消息，同样把消息分发出去
+
+```java
+public boolean iterate() { 
+    // Deliver any messages queued on the consumer to their listeners. 
+    for (ActiveMQMessageConsumer consumer : this.session.consumers) { 
+        if (consumer.iterate()) {
+            return true;
+        }
+    } 
+    // No messages left queued on the listeners.. so now dispatch messages 
+    // queued on the session
+    MessageDispatch message = messageQueue.dequeueNoWait(); 
+    if (message == null) { 
+        return false;
+    } else { 
+        dispatch(message); 
+        return !messageQueue.isEmpty();
+    }
+}
+```
+
+
+
+##### ActiveMQMessageConsumer.dispatch
+
+```java
+public boolean iterate() {
+        MessageListener listener = (MessageListener)this.messageListener.get();
+        if (listener != null) {
+            MessageDispatch md = this.unconsumedMessages.dequeueNoWait();
+            if (md != null) {
+                this.dispatch(md);
+                return true;
+            }
+        }
+
+        return false;
+    }
+```
+
+
+
+#### 同步分发的流程
+
+同步分发的流程，直接调用ActiveMQSessionExcutor中的dispatch方法，代码如下
+
+```java 
+void dispatch(MessageDispatch message) { 
+    // TODO - we should use a Map for this indexed by consumerId 
+    for (ActiveMQMessageConsumer consumer : this.session.consumers) { 
+        ConsumerId consumerId = message.getConsumerId(); 
+        if (consumerId.equals(consumer.getConsumerId())) { 
+            consumer.dispatch(message); break; 
+        }
+    }
+}
+```
+
+#### ActiveMQMessageConsumer.dispathc
+
+调用ActiveMQMessageConsumer.dispatch方法，把消息转存到unconsumedMessages消息队列中。
+
+```java
+public void dispatch(MessageDispatch md) {
+        MessageListener listener = (MessageListener)this.messageListener.get();
+
+        try {
+            this.clearMessagesInProgress();
+            this.clearDeliveredList();
+            synchronized(this.unconsumedMessages.getMutex()) {
+                if (!this.unconsumedMessages.isClosed()) {
+                    if (!this.info.isBrowser() && this.session.connection.isDuplicate(this, md.getMessage())) {
+                        if (!this.session.isTransacted()) {
+                            LOG.warn("Duplicate non transacted dispatch to consumer: " + this.getConsumerId() + ", poison acking: " + md);
+                            MessageAck poisonAck = new MessageAck(md, (byte)1, 1);
+                            poisonAck.setFirstMessageId(md.getMessage().getMessageId());
+                            poisonAck.setPoisonCause(new Throwable("Duplicate non transacted delivery to " + this.getConsumerId()));
+                            this.session.sendAck(poisonAck);
+                        } else {
+                            if (LOG.isDebugEnabled()) {
+                                LOG.debug(this.getConsumerId() + " tracking transacted redelivery of duplicate: " + md.getMessage());
+                            }
+
+                            boolean needsPoisonAck = false;
+                            synchronized(this.deliveredMessages) {
+                                if (this.previouslyDeliveredMessages != null) {
+                                    this.previouslyDeliveredMessages.put(md.getMessage().getMessageId(), true);
+                                } else {
+                                    needsPoisonAck = true;
+                                }
+                            }
+
+                            if (needsPoisonAck) {
+                                MessageAck poisonAck = new MessageAck(md, (byte)1, 1);
+                                poisonAck.setFirstMessageId(md.getMessage().getMessageId());
+                                poisonAck.setPoisonCause(new JMSException("Duplicate dispatch with transacted redeliver pending on another consumer, connection: " + this.session.getConnection().getConnectionInfo().getConnectionId()));
+                                LOG.warn("acking duplicate delivery as poison, redelivery must be pending to another consumer on this connection, failoverRedeliveryWaitPeriod=" + this.failoverRedeliveryWaitPeriod + ". Message: " + md + ", poisonAck: " + poisonAck);
+                                this.session.sendAck(poisonAck);
+                            } else if (this.transactedIndividualAck) {
+                                this.immediateIndividualTransactedAck(md);
+                            } else {
+                                this.session.sendAck(new MessageAck(md, (byte)0, 1));
+                            }
+                        }
+                    } else if (listener != null && this.unconsumedMessages.isRunning()) {
+                        ActiveMQMessage message = this.createActiveMQMessage(md);
+                        this.beforeMessageIsConsumed(md);
+
+                        try {
+                            boolean expired = message.isExpired();
+                            if (!expired) {
+                                listener.onMessage(message);
+                            }
+
+                            this.afterMessageIsConsumed(md, expired);
+                        } catch (RuntimeException var9) {
+                            LOG.error(this.getConsumerId() + " Exception while processing message: " + md.getMessage().getMessageId(), var9);
+                            if (!this.isAutoAcknowledgeBatch() && !this.isAutoAcknowledgeEach() && !this.session.isIndividualAcknowledge()) {
+                                this.afterMessageIsConsumed(md, false);
+                            } else {
+                                md.setRollbackCause(var9);
+                                this.rollback();
+                            }
+                        }
+                    } else {
+                        if (!this.unconsumedMessages.isRunning()) {
+                            this.session.connection.rollbackDuplicate(this, md.getMessage());
+                        }
+
+                        this.unconsumedMessages.enqueue(md);
+                        if (this.availableListener != null) {
+                            this.availableListener.onMessageAvailable(this);
+                        }
+                    }
+                }
+            }
+
+            if (++this.dispatchedCount % 1000 == 0) {
+                this.dispatchedCount = 0;
+                Thread.yield();
+            }
+        } catch (Exception var11) {
+            this.session.connection.onClientInternalException(var11);
+        }
+
+    }
+```
+
+Ø 到这里为止，消息如何接受以及他的处理方式的流程，我们已经搞清楚了，希望对大家理解activeMQ的核心机制有一定的帮助
+
+### 消费端的PrefetchSize
+
+#### 原理剖析
+
+activemq的consumer端也有窗口机制，通过prefetchSize就可以设置窗口大小。不同的类型的队列，prefetchSize的默认值也是不一样的
+
+Ø 持久化队列和非持久化队列的默认值为 1000
+
+Ø 持久化topic默认值为100
+Ø 非持久化队列的默认值为Short.MAX_VALUE-1
+通过上面的例子，我们基本上应该知道prefetchSize的作用了，消费端会根据prefetchSize的大小批量获取数据，比如默认值是1000，那么消费端会预先加载1000条数据到本地的内存中。
+
+##### prefetchSize的设置方法
+
+在createQueue中添加consumer.prefetchSize，就可以看到效果
+
+```java 
+Destination destination=session.createQueue("myQueue?consumer.prefetchSize=10");
+```
+
+既然有批量加载，那么一定有批量确认，这样才算是彻底的优化
+
+##### optimizeAcknowledge
+
+ActiveMQ提供了optimizeAcknowledge来优化确认，它表示是否开启“优化ACK”，只有在为true的情况下，prefetchSize以及optimizeAcknowledgeTimeout参数才会有意义
+优化确认一方面可以减轻client负担（不需要频繁的确认消息）、减少通信开销，另一方面由于延迟了确认（默认ack了0.65*prefetchSize个消息才确认），broker再次发送消息时又可以批量发送
+如果只是开启了prefetchSize，每条消息都去确认的话，broker在收到确认后也只是发送一条消息，并不是批量发布，当然也可以通过设置DUPS_OK_ACK来手动延迟确认， 我们需要在brokerUrl指定optimizeACK选项ConnectionFactory connectionFactory= new ActiveMQConnectionFactory ("tcp://192.168.11.153:61616?jms.optimizeAcknowledge=true&jms.optimizeAcknowledgeTimeOut=10000");
+Ø 注意，如果optimizeAcknowledge为true，那么prefetchSize必须大于0. 当prefetchSize=0的时候，表示consumer通过PULL方式从broker获取消息
+
+#### 总结
+
+到目前为止，我们知道了optimizeAcknowledge和prefetchSize的作用，两者协同工作，通过批量获取消息、并延迟批量确认，来达到一个高效的消息消费模型。它比仅减少了客户端在获取消息时的阻塞次数，还能减少每次获取消息时的网络通信开销
+Ø 需要注意的是，如果消费端的消费速度比较高，通过这两者组合是能大大提升consumer的性能。如果consumer的消费性能本身就比较慢，设置比较大的prefetchSize反而不能有效的达到提升消费性能的目的。因为过大的prefetchSize不利于consumer端消息的负载均衡。因为通常情况下，我们都会部署多个consumer节点来提升消费端的消费性能。
+这个优化方案还会存在另外一个潜在风险，当消息被消费之后还没有来得及确认时，client端发生故障，那么这些消息就有可能会被重新发送给其他consumer，那么这种风险就需要client端能够容忍“重复”消息。
+
+### 消息的确认过程
+
+#### ACK_MODE
+
+通过前面的源码分析，基本上已经知道了消息的消费过程，以及消息的批量获取和批量确认，那么接下来再了解下消息的确认过程
+从第一节课的学习过程中，我们知道，消息确认有四种ACK_MODE，分别是
+AUTO_ACKNOWLEDGE = 1 自动确认
+CLIENT_ACKNOWLEDGE = 2 客户端手动确认
+DUPS_OK_ACKNOWLEDGE = 3 自动批量确认
+SESSION_TRANSACTED = 0 事务提交并确认
+虽然Client端指定了ACK模式,但是在Client与broker在交换ACK指令的时候,还需要告知ACK_TYPE,ACK_TYPE表示此确认指令的类型，不同的ACK_TYPE将传递着消息的状态，broker可以根据不同的ACK_TYPE对消息进行不同的操作。
+
+#### ACK_TYPE
+
+DELIVERED_ACK_TYPE = 0 消息"已接收"，但尚未处理结束
+STANDARD_ACK_TYPE = 2 "标准"类型,通常表示为消息"处理成功"，broker端可以删除消息了
+POSION_ACK_TYPE = 1 消息"错误",通常表示"抛弃"此消息，比如消息重发多次后，都无法正确处理时，消息将会被删除或者DLQ(死信队列)
+REDELIVERED_ACK_TYPE = 3 消息需"重发"，比如consumer处理消息时抛出了异常，broker稍后会重新发送此消息INDIVIDUAL_ACK_TYPE = 4 表示只确认"单条消息",无论在任何ACK_MODE下
+UNMATCHED_ACK_TYPE = 5 在Topic中，如果一条消息在转发给“订阅者”时，发现此消息不符合Selector过滤条件，那么此消息将 不会转发给订阅者，消息将会被存储引擎删除(相当于在Broker上确认了消息)。
+Client端在不同的ACK模式时,将意味着在不同的时机发送ACK指令,每个ACK Command中会包含ACK_TYPE,那么broker端就可以根据ACK_TYPE来决定此消息的后续操作
+
+### 消息的重发机制原理
+
+#### 消息重发的情况
+
+在正常情况下，有几中情况会导致消息重新发送
+Ø 在事务性会话中，没有调用session.commit确认消息或者调用session.rollback方法回滚消息
+Ø 在非事务性会话中，ACK模式为CLIENT_ACKNOWLEDGE的情况下，没有调用acknowledge或者调用了recover方法；
+
+一个消息被redelivedred超过默认的最大重发次数（默认6次）时，消费端会给broker发送一个”poison ack”(ActiveMQMessageConsumer#dispatch：1460行)，表示这个消息有毒，告诉broker不要再发了。这个时候broker会把这个消息放到DLQ（死信队列）。
+
+#### 死信队列
+
+ActiveMQ中默认的死信队列是ActiveMQ.DLQ，如果没有特别的配置，有毒的消息都会被发送到这个队列。默认情况下，如果持久消息过期以后，也会被送到DLQ中。
+
+#### 死信队列配置策略
+
+缺省所有队列的死信消息都被发送到同一个缺省死信队列，不便于管理，可以通过individualDeadLetterStrategy或sharedDeadLetterStrategy策略来进行修改
+
+```xml
+<destinationPolicy> 
+    <policyMap> 
+        <policyEntries> 
+            <policyEntry topic=">" > 
+                <pendingMessageLimitStrategy> 
+                    <constantPendingMessageLimitStrategy limit="1000"/> 	                					</pendingMessageLimitStrategy>
+            </policyEntry> // “>”表示对所有队列生效，如果需要设置指定队列，则直接写队列名称 					<policyEntry queue=">">
+            <deadLetterStrategy> //queuePrefix:设置死信队列前缀 //useQueueForQueueMessage 设置队列保存到死信。 <individualDeadLetterStrategy queuePrefix="DLQ." useQueueForQueueMessages="true"/> 				</deadLetterStrategy> 
+            </policyEntry> 
+        </policyEntries> 
+    </policyMap> 
+</destinationPolicy>
+```
+
+
+
+#### 自动丢弃过期消息
+
+```xml
+<deadLetterStrategy> 
+    <sharedDeadLetterStrategy processExpired="false" /> 
+</deadLetterStrategy>
+```
+
+
+
+#### 死信队列的再次消费
+
+当定位到消息不能消费的原因后，就可以在解决掉这个问题之后，再次消费死信队列中的消息。因为死信队列仍然是一个队列
+
+### ActiveMQ静态网络配置
+
+#### 配置说明
+
+修改activeMQ服务器的activeMQ.xml, 增加如下配置
+
+```xml
+<networkConnectors> 
+	<networkConnector uri="static://(tcp://192.168.11.153:61616,tcp://192.168.11.154:61616)"/> </networkConnectors>
+```
+
+两个Brokers通过一个static的协议来进行网络连接。一个Consumer连接到BrokerB的一个地址上，当Producer在BrokerA上以相同的地址发送消息是，此时消息会被转移到BrokerB上，也就是说BrokerA会转发消息到BrokerB上
+
+#### 消息回流
+
+从5.6版本开始，在destinationPolicy上新增了一个选项replayWhenNoConsumers属性，这个属性可以用来解决当broker1上有需要转发的消息但是没有消费者时，把消息回流到它原始的broker。同时把enableAudit设置为false，为了防止消息回流后被当作重复消息而不被分发
+通过如下配置，在activeMQ.xml中。 分别在两台服务器都配置。即可完成消息回流处理
+
+```xml
+<policyEntry queue=">" enableAudit="false"> 
+    <networkBridgeFilterFactory> 
+        <conditionalNetworkBridgeFilterFactory replayWhenNoConsumers="true"/> 				       </networkBridgeFilterFactory>
+</policyEntry>
+```
+
+#### 动态网络连接
+
+ActiveMQ使用Multicast协议将一个Service和其他的Broker的Service连接起来。Multicast能够自动的发现其他broker，从而替代了使用static功能列表brokers。用multicast协议可以在网络中频繁
+multicast://ipadaddress:port?transportOptions
+
+### 基于zookeeper+levelDB的HA集群搭建
+
+activeMQ5.9以后推出的基于zookeeper的master/slave主从实现。虽然ActiveMQ不建议使用LevelDB作为存储，主要原因是，社区的主要精力都几种在kahadb的维护上，包括bug修复等。所以并没有对LevelDB做太多的关注，所以他在是不做为推荐商用。但实际上在很多公司，仍然采用了LevelDB+zookeeper的高可用集群方案。而实际推荐的方案，仍然是基于KahaDB的文件共享以及Jdbc的方式来实现。
+
+#### 配置
+
+在三台机器上安装activemq，通过三个实例组成集群。
+
+#### 修改配置
+
+**directory**：表示LevelDB所在的主工作目录
+**replicas**:表示总的节点数。比如我们的及群众有3个节点，且最多允许一个节点出现故障，那么这个值可以设置为2，也可以设置为3. 因为计算公式为 (replicas/2)+1. 如果我们设置为4， 就表示不允许3个节点的任何一个节点出错。
+**bind**：当当前的节点为master时，它会根据绑定好的地址和端口来进行主从复制协议
+**zkAddress**：zk的地址
+**hostname**：本机IP
+
+**sync**：在认为消息被消费完成前，同步信息所存储的策略。 local_mem/local_disk
+ActiveMQ
+
+### ActiveMQ的优缺点
+
+ActiveMQ采用消息推送方式，所以最适合的场景是默认消息都可在短时间内被消费。数据量越大，查找和消费消息就越慢，消息积压程度与消息速度成反比。
+
+#### 优点
+
+1.吞吐量低。由于ActiveMQ需要建立索引，导致吞吐量下降。这是无法克服的缺点，只要使用完全符合JMS规范的消息中间件，就要接受这个级别的TPS。
+2.无分片功能。这是一个功能缺失，JMS并没有规定消息中间件的集群、分片机制。而由于ActiveMQ是伟企业级开发设计的消息中间件，初衷并不是为了处理海量消息和高并发请求。如果一台服务器不能承受更多消息，则需要横向拆分。ActiveMQ官方不提供分片机制，需要自己实现。
+
+#### 适用场景
+
+对TPS要求比较低的系统，可以使用ActiveMQ来实现，一方面比较简单，能够快速上手开发，另一方面可控性也比较好，还有比较好的监控机制和界面
+
+#### 不适用的场景
+
+消息量巨大的场景。ActiveMQ不支持消息自动分片机制，如果消息量巨大，导致一台服务器不能处理全部消息，就需要自己开发消息分片功能。
 
 
 
