@@ -1,4 +1,6 @@
-# Spring 整体架构
+# Spring
+
+## Spring 整体架构 
 
 **数据访问/集成**：包括JDBC、ORM、OXM、JMS、TRANSCATIONS(事务)
 
@@ -16,7 +18,7 @@
 
 **Test**
 
-## (1）Core Container(核心容器)
+### (1）Core Container(核心容器)
 
 **Core Container(核心容器)**包含有Core、Bean、Context和Expression Language模块。Core和Bean模块是框架的基础部分，提供IOC（反转控制）和依赖注入特性。这里的基础概念是BeanFactory，它提供对Factory模式的经典来消除对程序性单例模式的需要，并真正地允许你从程序逻辑中分离依赖关系和配置。
 
@@ -25,7 +27,7 @@
  - Context模块构建于Core和Beans模块基础之上，提供了一种类似于JDNI注册器的框架式的对象访问方法。Context模块继承了Beans特性，为Spring核心提供了大量扩展，添加了对国际化（例如资源绑定）、事件传播、资源加载和对Context的透明创建的支持。Context模块同时也支持J2EE的一些特性，例如EJB、JMX和基础的远程处理。ApplicationContext接口是Context模块的关键。
  - Expression Language 模块提供了一个强大的表达式语言用于在运行时查询和操作对象。它是JSP2.1规范中定义的unifed expression language的一个扩展。该语言支持设置/获取属性的值，属性的分配，方法的调用，访问数组上下文（accessiong the context of arrays）、容器和索引器、逻辑和算术运算符、命名变量以及从Spring的IOC容器中根据名称检索对象。它也支持list投影、选择和一般的list聚合。
 
-## (2)Data Access/Integration(数据访问/集成)
+### (2)Data Access/Integration(数据访问/集成)
 
 Data Access/Integration层包含有JDBC、ORM、OXM、JMS和Transaction模块，其中
 
@@ -41,7 +43,7 @@ Data Access/Integration层包含有JDBC、ORM、OXM、JMS和Transaction模块，
 
 - Transaction模块支持编程和声明性的事物管理，这些事物类必须实现特定的接口，并且对所有的POJO都适用
 
-## (3）WEB
+### (3）WEB
 
 Web上下文模块建立在应用程序上下文模块之上，为基于Web的应用程序提供了上下文。所有，Spring框架支持与Jakarta Struts的集成。Web模块还简化了处理多部分请求以及将请求参数绑定到域对象的工作。Web层包括了WEb、Web-Servlet、Web-Struts和Web-Porlet模块，具体说明如下。
 
@@ -50,7 +52,7 @@ Web上下文模块建立在应用程序上下文模块之上，为基于Web的�
 - Web-Struts模块：该模块提供了对Struts的支持，使得类在Spring应用中能够与一个典型的Struts Web层集成在一起。注意，该支持在Spring3.0中是deprecated的。
 - Web-Porlet模块：提供了用于Portlet环境和Web-Servlet模块的MVC的实现。
 
-## (4）AOP
+### (4）AOP
 
 AOP模块提供了一个符合AOP联盟标准的面向切面编程的实现，它让你可以定义例如方法拦截器和切点，从而将逻辑代码分开，降低他们之间的耦合性。利用source-level的元数据功能，还可以将各种行为信息合并到你的代码中，这有点像.Net技术中的attribute概念。
 
@@ -59,13 +61,13 @@ AOP模块提供了一个符合AOP联盟标准的面向切面编程的实现，�
 - Aspects模块提供了对AspectJ的集成支持。
 - Instrumentation模块提供了class instrumentation支持和classloader实现，使得可以在特定的应用服务器上使用。
 
-## (5)Test
+### (5)Test
 
 ​	Test模块支持使用JUnit和TestNG对Spring组件进行测试。
 
-# 核心类介绍
+## 核心类介绍
 
-## 1、DefaultListableBeanFactory
+### 1、DefaultListableBeanFactory
 
 XmlBeanFactory继承了DefaultListableBeanFactory，而DefaultListableBeanFactory是整个Bean加载的核心部分，是Spring注册及加载Bean的默认实现，而对于XMLBeanFactory与DefaultListableBeanFactory不同的地方其实是在XmlBeanFactory中使用了自定义的XML读取器XmlBeanDefinitionReader,实现了个性化的BeanDefinitionRead读取，DefaultListableBeanFactory继承了AbstractAutowireCapableBeanFactory并实现了ConfigurableListableBeanFactory以及BeanDefinitionRegisry接口。
 
@@ -101,7 +103,7 @@ XmlBeanFactory继承了DefaultListableBeanFactory，而DefaultListableBeanFactor
 
   XmlBeanFactory对DefaultListableBeanFactory进行了扩展，主要用于从XML文档中读取BeanDefinition，对于注册及获取Bean都是使用从父类DefaultListableBeanFactory继承的方法去实现，而唯独与父类不同的个性化实现就是增加了XmlBeanDefinitionReader类型的reader属性。在XmlBeanFactory中主要使用reader属性对资源文件进行读取和注册。
 
-## 2、XmlBeanDefinitionReader
+### 2、XmlBeanDefinitionReader
 
 XML配置文件的读取是Spring中最重要的功能，因为Spring的大部分功能都是以配置作为切入点，那么我们可以从XmlBeanDefinitionReader中梳理一下资源文件读取、解析及注册的大致脉络，首先我们看看各个类的功能。
 
@@ -140,6 +142,36 @@ XML配置文件的读取是Spring中最重要的功能，因为Spring的大部�
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+# Spring（小马哥）
+
+## 版本的管理
+
+Spring Framework 版本                          Java标准版                           Java企业版
+
+1.X                                                                 1.3+                                   J2EE 1.3+
+
+2.X                                                                  1.4.2+                               J2EE 1.3+
+
+3.X                                                                   5+                                    J2EE 1.4 和Java EE 5
+
+4.X                                                                   6+                                    Java EE 6和7
+
+5.X                                                                   8+                                    Java EE 7
+
+**java 1.3引入动态代理，1.4.2对NIO的支持，5注解和枚举 **   
+
+## 
 
 
 
