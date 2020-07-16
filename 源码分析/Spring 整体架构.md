@@ -171,17 +171,96 @@ Spring Framework 版本                          Java标准版                  
 
 **java 1.3引入动态代理，1.4.2对NIO的支持，5注解和枚举 **   
 
-## 
+## Java变法
+
+**2004**      Java 5
+
+枚举、泛型、注解、封箱
+
+**2006**     Java6
+
+@Override接口
+
+**2011**    Java7
+
+Diamond语法、多Catch、Try
+
+**2014**    Java8
+
+Lambda语法、可重复注解、类型注解
+
+**2017**    Java9
+
+模块化、接口私有方法
+
+**2018**     Java10
+
+局部变量类型推断
+
+## Spring Framework有哪些核心模块
+
+**spring-core**:Spring 基础API模块，如资源管理，泛型处理
+
+**spring-beans**：Sring Bean相关，如依赖查找、依赖注入
+
+**spring-aop**:Spring AOP处理，如动态代理，AOP字节码提升
+
+**spring-context**:事件驱动、注解驱动、模块驱动等
+
+**spring-expression**：Spring 表达式语言模块
 
 
 
+## 第二章重新认识IOC
 
+## 第三章IOC容器概述
 
+### IOC依赖查找
 
+* 根据Bean名称查找
+  * 实时查找
+  * 延迟查找
+* 根据Bean类型查找
+  * 单个Bean对象
+  * 集合Bean对象
+* 根据Bean名称+类型查找
+* 根据Java注解查找
+  * 单个Bean对象
+  * 集合Bean对象
 
+### IOC依赖注入
 
+* 根据Bean名称注入
+* 根据Bean类型注入
+  * 单个Bean对象
+  * 集合Bean对象
+* 注入容器内建Bean对象
+* 注入非Bean对象
+* 注入类型
+  * 实时注入
+  * 延迟注入
 
+### IOC依赖来源
 
+* 自定义Bean
+* 容器内建Bean对象
+* 容器内建依赖
+
+### IOC配置元信息
+
+* Bean定义配置
+  * 基于XML文件
+  * 基于Properties文件
+  * 基于Java注解
+  * 基于Java API(专题讨论)
+* IOC容器配置
+  * 基于XML文件
+  * 基于Java注解
+  * 基于Java API
+* 外部化属性配置
+  * 基于Java注解
+
+## 第四章Spring Bean基础
 
 
 
